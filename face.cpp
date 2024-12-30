@@ -1,3 +1,7 @@
+/*
+compilation command
+clang++ -std=c++17 -o face3 newface.cpp $(pkg-config --cflags --libs opencv4)
+*/
 #include <opencv2/opencv.hpp>
 #include <opencv2/objdetect.hpp>
 #include <opencv2/highgui.hpp>
@@ -5,35 +9,62 @@
 #include <opencv2/imgcodecs.hpp>
 #include <opencv2/core.hpp>
 #include <iostream>
+#include <cstdlib>  // For system command
+#include <chrono>   // For time calculation
+#include <vector>   // For vector
+#include <sys/types.h>
+#include <unistd.h> // For fork and exec
 
 using namespace std;
 using namespace cv;
 
+// Function to pause media playback using AppleScript
+void pauseMedia() {
+    pid_t pid = fork();
+    if (pid == 0) { // Child process
+        execl("/usr/bin/osascript", "osascript", "-e", "tell application \"System Events\" to key code 49", (char *)NULL);
+        exit(0); // Exit if exec fails
+    }
+}
+
+// Function to play media playback using AppleScript
+void playMedia() {
+    pid_t pid = fork();
+    if (pid == 0) { // Child process
+        execl("/usr/bin/osascript", "osascript", "-e", "tell application \"System Events\" to key code 49", (char *)NULL);
+        exit(0); // Exit if exec fails
+    }
+}
+
 int main() {
-    // Load the Haar cascades for face and eye detection
+    // Load the Haar cascade for face detection
     CascadeClassifier faceCascade;
-    CascadeClassifier eyeCascade;
-    
     if (!faceCascade.load("haarcascade_frontalface_default.xml")) {
         cout << "Error loading face cascade\n";
         return -1;
     }
-    
-    if (!eyeCascade.load("haarcascade_eye.xml")) {
-        cout << "Error loading eye cascade\n";
-        return -1;
-    }
 
-    // Start video capture from webcam
+    // Start video capture from the webcam
     VideoCapture cap(0); // 0 is the default camera
     if (!cap.isOpened()) {
         cout << "Error opening video stream\n";
         return -1;
     }
 
+    // Threshold for minimum face size
+    const int faceSizeThreshold = 20000;
+
+    // Timers for face detection and no face detection
+    auto lastFaceDetectedTime = chrono::steady_clock::now();
+    auto lastSmallFaceTime = chrono::steady_clock::now();
+    auto lastNoFaceTime = chrono::steady_clock::now();
+    bool faceDetected = false;
+    bool mediaPaused = false;
+    bool smallFaceDetected = false;
+
     while (true) {
         Mat frame;
-        cap >> frame;  // Capture the current frame
+        cap >> frame; // Capture the current frame
 
         if (frame.empty()) {
             cout << "Error capturing frame\n";
@@ -43,33 +74,70 @@ int main() {
         // Convert frame to grayscale
         Mat grayFrame;
         cvtColor(frame, grayFrame, COLOR_BGR2GRAY);
-        equalizeHist(grayFrame, grayFrame);  // Equalize histogram for better detection
+        equalizeHist(grayFrame, grayFrame); // Equalize histogram for better detection
 
         // Detect faces
         vector<Rect> faces;
         faceCascade.detectMultiScale(grayFrame, faces, 1.1, 2, 0 | CASCADE_SCALE_IMAGE, Size(30, 30));
 
-        for (size_t i = 0; i < faces.size(); i++) {
-            // Draw rectangle around the face
-            rectangle(frame, faces[i], Scalar(255, 0, 0), 2);
-
-            Mat faceROI = grayFrame(faces[i]);
-
-            // Detect eyes within the face region
-            vector<Rect> eyes;
-            eyeCascade.detectMultiScale(faceROI, eyes, 1.1, 2, 0 | CASCADE_SCALE_IMAGE, Size(30, 30));
-
-            for (size_t j = 0; j < eyes.size(); j++) {
-                // Get the coordinates of the eye within the face ROI
-                Rect eye = eyes[j];
-                Point eyeCenter(faces[i].x + eye.x + eye.width / 2, faces[i].y + eye.y + eye.height / 2);
-                int radius = cvRound((eye.width + eye.height) * 0.25);
-                circle(frame, eyeCenter, radius, Scalar(0, 255, 0), 2);
+        if (faces.empty()) {
+            if (faceDetected) {
+                lastNoFaceTime = chrono::steady_clock::now();
+                faceDetected = false;
             }
+
+            auto now = chrono::steady_clock::now();
+            auto duration = chrono::duration_cast<chrono::seconds>(now - lastNoFaceTime);
+
+            if (duration.count() >= 1 && !mediaPaused) {
+                cout << "Pausing media due to no face detected...\n";
+                pauseMedia();
+                mediaPaused = true;
+            }
+        } else {
+            // A face is detected
+            if (!faceDetected) {
+                lastFaceDetectedTime = chrono::steady_clock::now();
+                faceDetected = true;
+            }
+
+            auto now = chrono::steady_clock::now();
+            auto duration = chrono::duration_cast<chrono::seconds>(now - lastFaceDetectedTime);
+
+            // Check the size of the first detected face
+            Rect face = faces[0];
+            int faceSize = face.width * face.height;
+
+            cout << "Detected face size: " << faceSize << "\n";
+
+            if (faceSize < faceSizeThreshold) {
+                if (!smallFaceDetected) {
+                    lastSmallFaceTime = chrono::steady_clock::now();
+                    smallFaceDetected = true;
+                }
+
+                auto smallFaceDuration = chrono::duration_cast<chrono::seconds>(now - lastSmallFaceTime);
+                if (smallFaceDuration.count() >= 1 && !mediaPaused) {
+                    cout << "Pausing media due to small face size detected for 2 seconds...\n";
+                    pauseMedia();
+                    mediaPaused = true;
+                }
+            } else {
+                smallFaceDetected = false; // Reset small face detection timer
+
+                if (duration.count() >= 1 && mediaPaused) {
+                    cout << "Resuming media as face is continuously detected with sufficient size...\n";
+                    playMedia();
+                    mediaPaused = false;
+                }
+            }
+
+            // Draw rectangle around the face
+            rectangle(frame, face, Scalar(255, 0, 0), 2);
         }
 
         // Show the frame with detections
-        imshow("Eye Tracking", frame);
+        imshow("Face Detection", frame);
 
         // Break the loop if the user presses 'q'
         if (waitKey(10) == 'q') {
